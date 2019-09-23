@@ -247,27 +247,28 @@ public:
 
     SELIO_DISABLE_COPY_COTOR(UnixSocket);
 
-    int connect(const char *name, size_t nameLen = 0) {
+    int connect(const char *filename, ssize_t nameLen = -1) {
         int err;
 
-        if (name == nullptr)
+        if (filename == nullptr)
             return -1;
 
-        if (nameLen == 0)
-            nameLen = strlen(name);
+        if (nameLen == -1)
+            nameLen = strlen(filename);
 
         keepFile = true;
-        this->name = std::string(name, nameLen);
+        name = std::string(filename, nameLen);
 
         fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
         if (fd == -1)
             return -1;
 
         struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(struct sockaddr_un));
         addr.sun_family = AF_UNIX;
-        strncpy(addr.sun_path, name, sizeof(addr.sun_path));
+        memcpy(&addr.sun_path[0], name.data(), name.size());
 
-        if (::connect(fd, (struct sockaddr*)&addr, sizeof(struct sockaddr_un)) == -1)
+        if (::connect(fd, (struct sockaddr*)&addr, sizeof(struct sockaddr_un) - (sizeof(addr.sun_path) - nameLen)) == -1)
             goto ERROR;
 
         return fd;
@@ -279,27 +280,28 @@ ERROR:
         return -1;
     }
 
-    int bind(const char *name, size_t nameLen = 0, int type = SOCK_STREAM, int backlog = 50) {
+    int bind(const char *filename, ssize_t nameLen = -1, int type = SOCK_STREAM, int backlog = 50) {
         int err;
 
-        if (name == nullptr)
+        if (filename == nullptr)
             return -1;
 
-        if (nameLen == 0)
-            nameLen = strlen(name);
+        if (nameLen == -1)
+            nameLen = strlen(filename);
 
         keepFile = false;
-        this->name = std::string(name, nameLen);
+        name = std::string(filename, nameLen);
 
         fd = ::socket(AF_UNIX, type, 0);
         if (fd == -1)
             return fd;
         
         struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(struct sockaddr_un));
         addr.sun_family = AF_UNIX;
-        strncpy(addr.sun_path, name, sizeof(addr.sun_path));
+        memcpy(&addr.sun_path[0], name.data(), name.size());
 
-        if (::bind(fd, (struct sockaddr*)&addr, sizeof(struct sockaddr_un)) == -1)
+        if (::bind(fd, (struct sockaddr*)&addr, sizeof(struct sockaddr_un) - (sizeof(addr.sun_path) - nameLen)) == -1)
             goto ERROR;
 
         if (::listen(fd, backlog) == -1)

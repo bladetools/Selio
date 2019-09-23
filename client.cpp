@@ -13,8 +13,7 @@
 #include <functional>
 
 #include "Selio.hpp"
-
-#define SENDFD 1
+#include "test.h"
 
 using namespace std;
 using namespace selio;
@@ -35,7 +34,7 @@ int main(int argc, char const *argv[])
 
     UnixSocketPtr client = make_shared<UnixSocket>();
 
-    if (client->connect("\0/tmp/test_server.socket") < 0) {
+    if (client->connect(SOCK_FILE_NAME, SOCK_FILE_NAME_LEN) < 0) {
         fprintf(stderr, "Unable to connect socket %s\n", strerror(errno));
         return -1;
     }
