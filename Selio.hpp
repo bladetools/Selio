@@ -22,10 +22,11 @@
 
 namespace selio {
 
-template<class SelectablePtr>
+template<class SelectableType>
 class Selector;
 
 enum {
+    SEL_NONE    = 0,
     SEL_READ    = 1,
     SEL_WRITE   = 2,
     SEL_CONNECT = 4,
@@ -33,13 +34,15 @@ enum {
     SEL_MASK    = 0x0f
 };
 
+
+template<class UDT = void*>
 class Selectable {
 protected:
     int fd;
     int sel;
     int ready;
 public:
-    void *userData;
+    UDT data;
 
     explicit Selectable(int fd = -1) : fd(fd), ready(false) {  }
     
@@ -62,7 +65,7 @@ public:
 
     int releaseFd() { int s = fd; fd = -1; return s; }
 
-    int configureBlocking(bool block) {
+    int setBlocking(bool block) {
         int ret = fcntl(fd, F_GETFL);
         if (ret == -1)
             return ret;
@@ -110,35 +113,188 @@ public:
         return SEL_ACCEPT & ready;
     }
 
-    template<class SelectablePtr>
+    template<class SelectableType>
     friend class Selector;
 };
 
-template<class SelectablePtr>
+template<class UDT = void*>
+class SelectableSocket : public Selectable<UDT> {
+public:
+    explicit SelectableSocket(int fd = -1) : Selectable<UDT>(fd) { }
+
+    SelectableSocket(SelectableSocket &&s) : Selectable<UDT>(std::move(s)) { }
+
+    virtual ~SelectableSocket() { }
+
+    SELIO_DISABLE_COPY_COTOR(SelectableSocket);
+
+    int create() {
+        this->fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        if (this->fd == -1)
+            return -1;
+
+        return this->fd;
+    }
+
+    int setsockopt(int optname, int val) {
+        return ::setsockopt(this->fd, SOL_SOCKET, optname, &val, sizeof(val));
+    }
+
+    int getsockopt(int optname, int *p) {
+        socklen_t errLen = sizeof(int);
+        return ::getsockopt(this->fd, SOL_SOCKET, optname, &p, &errLen);
+    }
+
+    bool isConnected() {
+        int val = 0;
+        if (getsockopt(SO_ERROR, &val) < 0)
+            return false;
+        return !val;
+    }
+
+    bool isClosed() {
+        return this->fd == -1;
+    }
+
+    ssize_t recv(void *data, size_t size, int flags = 0) {
+        return ::recv(this->fd, data, size, flags);
+    }
+
+    ssize_t send(const void *data, size_t size, int flags = 0) {
+        return ::send(this->fd, data, size, flags);
+    }
+
+    ssize_t sendmsg(const struct msghdr *msg, int flags = 0) {
+        return ::sendmsg(this->fd, msg, flags);
+    }
+
+    ssize_t recvmsg(struct msghdr *msg, int flags = 0) {
+        return ::recvmsg(this->fd, msg, flags);
+    }
+};
+
+template<class UDT = void*>
+class UnixSocket : public SelectableSocket<UDT>
+{
+private:
+    bool keepFile;
+    std::string name;
+public:
+    explicit UnixSocket(int fd = -1) : SelectableSocket<UDT>(fd), keepFile(false) { }
+
+    UnixSocket(UnixSocket &&s) : SelectableSocket<UDT>(std::move(s)), keepFile(s.keepFile), name(std::move(s.name)) { 
+        s.keepFile = false;
+    }
+
+    virtual ~UnixSocket() {
+        if (!keepFile && name.size() && name[0])
+            unlink(name.c_str());
+    }
+
+    SELIO_DISABLE_COPY_COTOR(UnixSocket);
+
+    int connect(const char *filename, ssize_t nameLen = -1) {
+        int err;
+
+        if (this->fd == -1) {
+            errno = EBADF;
+            return -1;
+        }
+
+        if (filename == nullptr) {
+            errno = EINVAL;
+            return -1;
+        }
+
+        if (nameLen == -1)
+            nameLen = strlen(filename);
+
+        keepFile = true;
+        name = std::string(filename, nameLen);
+
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(struct sockaddr_un));
+        addr.sun_family = AF_UNIX;
+        memcpy(&addr.sun_path[0], name.data(), name.size());
+
+        if (::connect(this->fd, (struct sockaddr*)&addr, sizeof(struct sockaddr_un) - (sizeof(addr.sun_path) - nameLen)) == -1)
+            goto ERROR;
+
+        return this->fd;
+ERROR:
+        err = errno;
+        if (this->fd != -1)
+            ::close(this->fd);
+        errno = err;
+        return -1;
+    }
+
+    int bind(const char *filename, ssize_t nameLen = -1, int type = SOCK_STREAM, int backlog = 50) {
+        int err;
+
+        if (this->fd == -1) {
+            errno = EBADF;
+            return -1;
+        }
+
+        if (filename == nullptr) {
+            errno = EINVAL;
+            return -1;
+        }
+
+        if (nameLen == -1)
+            nameLen = strlen(filename);
+
+        keepFile = false;
+        name = std::string(filename, nameLen);
+        
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(struct sockaddr_un));
+        addr.sun_family = AF_UNIX;
+        memcpy(&addr.sun_path[0], name.data(), name.size());
+
+        if (::bind(this->fd, (struct sockaddr*)&addr, sizeof(struct sockaddr_un) - (sizeof(addr.sun_path) - nameLen)) == -1)
+            goto ERROR;
+
+        if (::listen(this->fd, backlog) == -1)
+            goto ERROR;
+        
+        return this->fd;
+ERROR:
+        err = errno;
+        if (this->fd != -1)
+            ::close(this->fd);
+        errno = err;
+        return -1;
+    }
+};
+
+
+template<class SelectableType>
 class Selector {
 private:
-    std::vector<SelectablePtr> fds;
-    std::vector<SelectablePtr> selectedFds;
+    std::vector<SelectableType> fds;
+    std::vector<SelectableType> selectedFds;
 public:
 
-    void add(SelectablePtr s, int sel) {
+    void add(SelectableType s, int sel) {
         s->sel = sel;
         fds.push_back(s);
     }
 
-    void remove(SelectablePtr s) {
+    void remove(SelectableType s) {
         fds.erase(std::find(fds.begin(), fds.end(), s));
     }
 
-    void set(SelectablePtr s, int sel) {
+    void set(SelectableType s, int sel) {
         auto it = std::find(fds.begin(), fds.end(), s);
         if (it != fds.end())
             s->sel = sel;
     }
 
-    const std::vector<SelectablePtr> getSelectedFds() {
-        return selectedFds;
-    }
+    const std::vector<SelectableType> getFds() { return fds; }
+
+    const std::vector<SelectableType> getSelectedFds() { return selectedFds; }
 
     int select(long timeout) {
         int nfds = -1;
@@ -182,138 +338,6 @@ public:
         }
 
         return ret;
-    }
-};
-
-class SelectableSocket : public Selectable {
-public:
-    explicit SelectableSocket(int fd = -1) : Selectable(fd) { }
-
-    SelectableSocket(SelectableSocket &&s) : Selectable(std::move(s)) { }
-
-    virtual ~SelectableSocket() { }
-
-    SELIO_DISABLE_COPY_COTOR(SelectableSocket);
-
-    int setsockopt(int optname, int val) {
-        return ::setsockopt(fd, SOL_SOCKET, optname, &val, sizeof(val));
-    }
-
-    int getsockopt(int optname, int *p) {
-        socklen_t errLen = sizeof(int);
-        return ::getsockopt(fd, SOL_SOCKET, optname, &p, &errLen);
-    }
-
-    bool isConnected() {
-        int val = 0;
-        if (getsockopt(SO_ERROR, &val) < 0)
-            return false;
-        return !val;
-    }
-
-    ssize_t recv(void *data, size_t size, int flags = 0) {
-        return ::recv(fd, data, size, flags);
-    }
-
-    ssize_t send(const void *data, size_t size, int flags = 0) {
-        return ::send(fd, data, size, flags);
-    }
-
-    ssize_t sendmsg(const struct msghdr *msg, int flags = 0) {
-        return ::sendmsg(fd, msg, flags);
-    }
-
-    ssize_t recvmsg(struct msghdr *msg, int flags = 0) {
-        return ::recvmsg(fd, msg, flags);
-    }
-};
-
-class UnixSocket : public SelectableSocket
-{
-private:
-    bool keepFile;
-    std::string name;
-public:
-    explicit UnixSocket(int fd = -1) : SelectableSocket(fd), keepFile(false) { }
-
-    UnixSocket(UnixSocket &&s) : SelectableSocket(std::move(s)), keepFile(s.keepFile), name(std::move(s.name)) { 
-        s.keepFile = false;
-    }
-
-    virtual ~UnixSocket() {
-        if (!keepFile && name.size() && name[0])
-            unlink(name.c_str());
-    }
-
-    SELIO_DISABLE_COPY_COTOR(UnixSocket);
-
-    int connect(const char *filename, ssize_t nameLen = -1) {
-        int err;
-
-        if (filename == nullptr)
-            return -1;
-
-        if (nameLen == -1)
-            nameLen = strlen(filename);
-
-        keepFile = true;
-        name = std::string(filename, nameLen);
-
-        fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-        if (fd == -1)
-            return -1;
-
-        struct sockaddr_un addr;
-        memset(&addr, 0, sizeof(struct sockaddr_un));
-        addr.sun_family = AF_UNIX;
-        memcpy(&addr.sun_path[0], name.data(), name.size());
-
-        if (::connect(fd, (struct sockaddr*)&addr, sizeof(struct sockaddr_un) - (sizeof(addr.sun_path) - nameLen)) == -1)
-            goto ERROR;
-
-        return fd;
-ERROR:
-        err = errno;
-        if (fd != -1)
-            ::close(fd);
-        errno = err;
-        return -1;
-    }
-
-    int bind(const char *filename, ssize_t nameLen = -1, int type = SOCK_STREAM, int backlog = 50) {
-        int err;
-
-        if (filename == nullptr)
-            return -1;
-
-        if (nameLen == -1)
-            nameLen = strlen(filename);
-
-        keepFile = false;
-        name = std::string(filename, nameLen);
-
-        fd = ::socket(AF_UNIX, type, 0);
-        if (fd == -1)
-            return fd;
-        
-        struct sockaddr_un addr;
-        memset(&addr, 0, sizeof(struct sockaddr_un));
-        addr.sun_family = AF_UNIX;
-        memcpy(&addr.sun_path[0], name.data(), name.size());
-
-        if (::bind(fd, (struct sockaddr*)&addr, sizeof(struct sockaddr_un) - (sizeof(addr.sun_path) - nameLen)) == -1)
-            goto ERROR;
-
-        if (::listen(fd, backlog) == -1)
-            goto ERROR;
-        
-        return fd;
-ERROR:
-        err = errno;
-        if (fd != -1)
-            ::close(fd);
-        errno = err;
-        return -1;
     }
 };
 

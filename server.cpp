@@ -18,7 +18,7 @@
 using namespace std;
 using namespace selio;
 
-typedef std::shared_ptr<UnixSocket> UnixSocketPtr;
+typedef std::shared_ptr<UnixSocket<> > UnixSocketPtr;
 
 int quit = 0;
 
@@ -32,7 +32,12 @@ int main(int argc, char const *argv[])
     ::signal(SIGINT, interrupt);
     ::signal(SIGTERM, interrupt);
 
-    UnixSocketPtr server = make_shared<UnixSocket>();
+    UnixSocketPtr server = make_shared<UnixSocket<> >();
+
+    if (server->create() < 0) {
+        fprintf(stderr, "Unable to create socket %d\n", errno);
+        return -1;
+    }
 
     if (server->bind(SOCK_FILE_NAME, SOCK_FILE_NAME_LEN) < 0) {
         fprintf(stderr, "Unable to bind socket %d\n", errno);
@@ -65,7 +70,7 @@ int main(int argc, char const *argv[])
                     continue;
                 }
                 printf("Accept %s\n", addr.sun_path);
-                auto client = make_shared<UnixSocket>(clifd);
+                auto client = make_shared<UnixSocket<> >(clifd);
                 selector.add(client, SEL_READ);
             } else if (sock->isReadable()) {
                 char buf[64];
@@ -116,7 +121,7 @@ int main(int argc, char const *argv[])
                     continue;
                 }
                 printf("Accept %s\n", addr.sun_path);
-                auto client = make_shared<UnixSocket>(clifd);
+                auto client = make_shared<UnixSocket<> >(clifd);
                 selector.add(client, SEL_READ);
                 client->send("string from server\n", 19);
             } else if (sock->isReadable()) {

@@ -18,7 +18,7 @@
 using namespace std;
 using namespace selio;
 
-typedef std::shared_ptr<UnixSocket> UnixSocketPtr;
+typedef std::shared_ptr<UnixSocket<> > UnixSocketPtr;
 
 int quit = 0;
 
@@ -32,7 +32,12 @@ int main(int argc, char const *argv[])
     ::signal(SIGINT, interrupt);
     ::signal(SIGTERM, interrupt);
 
-    UnixSocketPtr client = make_shared<UnixSocket>();
+    UnixSocketPtr client = make_shared<UnixSocket<> >();
+
+    if (client->create() < 0) {
+        fprintf(stderr, "Unable to create socket %d\n", errno);
+        return -1;
+    }
 
     if (client->connect(SOCK_FILE_NAME, SOCK_FILE_NAME_LEN) < 0) {
         fprintf(stderr, "Unable to connect socket %s\n", strerror(errno));
